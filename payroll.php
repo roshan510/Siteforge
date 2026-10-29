@@ -1,0 +1,13 @@
+<?php require 'includes/core.php'; need(['accountant','manager']); $d=db(); $msg=$err=''; $mo=$_POST['month']??date('Y-m');
+if($_SERVER['REQUEST_METHOD']==='POST'){csrf_check();try{
+ if(($_POST['act']??'')==='gen'){ // wage rule: present=1 day, half=0.5, overtime = 1.5x hourly (daily/8)
+  $d->prepare("INSERT IGNORE INTO payroll_runs(worker_id,pay_month,days_worked,overtime_hrs,gross_pay) SELECT w.worker_id,?,SUM(a.status='present')+0.5*SUM(a.status='half'),SUM(a.overtime_hrs),w.daily_wage*(SUM(a.status='present')+0.5*SUM(a.status='half'))+SUM(a.overtime_hrs)*w.daily_wage/8*1.5 FROM labour_force w JOIN attendance_log a ON a.worker_id=w.worker_id WHERE DATE_FORMAT(a.work_date,'%Y-%m')=? GROUP BY w.worker_id")->execute([$mo,$mo]);audit("payroll gen $mo");$msg='Payroll generated (existing records untouched).';}
+ if(($_POST['act']??'')==='pay'){$d->beginTransaction();$s=$d->prepare("UPDATE payroll_runs SET paid='yes' WHERE run_id=? AND paid='no'");$s->execute([$_POST['id']]);
+  if($s->rowCount()){$d->prepare("INSERT INTO cost_entries(project_id,category,amount,cost_date,description) SELECT w.project_id,'labour',r.gross_pay,CURDATE(),CONCAT('Payroll ',r.pay_month,' ',w.full_name) FROM payroll_runs r JOIN labour_force w USING(worker_id) WHERE r.run_id=? AND w.project_id IS NOT NULL")->execute([$_POST['id']]);}
+  $d->commit();audit('payroll paid #'.$_POST['id']);$msg='Marked as paid.';}
+}catch(PDOException $x){if($d->inTransaction())$d->rollBack();$err='Payroll error.';}}
+top('Payroll'); if($msg)echo '<div class="alert alert-success">'.e($msg).'</div>'; if($err)echo '<div class="alert alert-danger">'.e($err).'</div>';
+echo '<form method="post" class="d-flex gap-2 mb-3">'.csrf_field().'<input type="hidden" name="act" value="gen"><input type="month" name="month" value="'.e($mo).'" class="form-control w-auto"><button class="btn btn-warning">Generate</button></form><div class="card"><table class="table mb-0"><tr><th>Month</th><th>Worker</th><th>Days</th><th>OT hrs</th><th>Gross ₹</th><th>Status</th><th></th></tr>';
+foreach($d->query('SELECT r.*,w.full_name FROM payroll_runs r JOIN labour_force w USING(worker_id) ORDER BY pay_month DESC,full_name') as $r){echo '<tr><td>'.e($r['pay_month']).'</td><td>'.e($r['full_name']).'</td><td>'.e($r['days_worked']).'</td><td>'.e($r['overtime_hrs']).'</td><td>'.e($r['gross_pay']).'</td><td>'.e($r['paid']).'</td><td>';
+ if($r['paid']==='no')echo '<form method="post">'.csrf_field().'<input type="hidden" name="act" value="pay"><input type="hidden" name="id" value="'.$r['run_id'].'"><button class="btn btn-sm btn-success">Pay</button></form>'; echo '</td></tr>';}
+echo '</table></div>'; bottom();
